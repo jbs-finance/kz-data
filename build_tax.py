@@ -15,12 +15,21 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from layout import CTA_STYLE, HEADER_STYLE, cta_block, meta_tags, site_header
+from layout import (
+    CTA_STYLE,
+    HEADER_STYLE,
+    cta_block,
+    dataset_jsonld,
+    meta_tags,
+    site_header,
+)
+from budget_block import BUDGET_STYLE, budget_section
 from build_pulse import STYLE, fmt_date
 
 HERE = Path(__file__).resolve().parent
 DATASET = HERE / "out" / "tax.json"
 DEFAULT_OUT = HERE / "out" / "tax.html"
+BUDGET = HERE / "out" / "budget.json"
 
 TAX_STYLE = """
 .tax-group { background: var(--card); border: 1px solid var(--muted); border-radius: var(--radius);
@@ -114,13 +123,39 @@ def simple_table(title: str, items: list[dict], columns: tuple[str, str]) -> str
       </section>"""
 
 
-def build(data: dict) -> str:
+def budget_jsonld(budget: dict | None, generated: datetime) -> str:
+    """Разметка набора данных: без неё поисковик читает страницу как статью."""
+    if not budget or not budget.get("dynamics"):
+        return ""
+    year = budget["dynamics"]["year"]
+    return dataset_jsonld(
+        generated.isoformat(),
+        ["Комитет государственных доходов МФ РК"],
+        name="Поступления налогов в бюджет Казахстана",
+        description=(
+            f"Помесячные поступления налогов и платежей в государственный бюджет "
+            f"Казахстана за {year} год в разрезе регионов и разрез по видам налогов."
+        ),
+        path="/radar/tax/",
+    )
+
+
+def build(data: dict, budget: dict | None = None) -> str:
     generated = datetime.fromisoformat(data["generated_at"])
+    budget_html, drill_rules = budget_section(budget) if budget else ("", "")
     return TEMPLATE.format(
-        meta=meta_tags('Налоги Казахстана 2026: ставки, пороги и сроки по Налоговому кодексу', 'Ставки НДС, КПН, ИПН, соцплатежей и спецрежимов на 2026 год с порогами в тенге и сроками отчётности. Справочник сверен с первоисточниками, дата сверки на странице.', '/radar/tax/'),
+        meta=meta_tags(
+            'Налоги Казахстана 2026: ставки, пороги и фактические поступления',
+            'Ставки НДС, КПН, ИПН и соцплатежей 2026 с порогами в тенге и сроками '
+            'отчётности, плюс фактические поступления в бюджет по месяцам и регионам '
+            'по данным КГД.',
+            '/radar/tax/',
+        )
+        + budget_jsonld(budget, generated),
         header=site_header('tax'),
         cta=cta_block(),
-        style=STYLE + HEADER_STYLE + CTA_STYLE + TAX_STYLE,
+        style=STYLE + HEADER_STYLE + CTA_STYLE + TAX_STYLE + BUDGET_STYLE + drill_rules,
+        budget=budget_html,
         year=data["year"],
         generated_human=generated.strftime("%d.%m.%Y %H:%M UTC"),
         generated_iso=generated.isoformat(),
@@ -165,6 +200,8 @@ TEMPLATE = """<!doctype html>
     <div class="tax-base">
 {base_cards}
     </div>
+
+{budget}
 
     <h2>Ставки</h2>
 {groups}
@@ -216,8 +253,14 @@ def main() -> None:
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUT
     dataset = Path(sys.argv[2]) if len(sys.argv) > 2 else DATASET
     data = json.loads(dataset.read_text(encoding="utf-8"))
+    budget_path = Path(sys.argv[3]) if len(sys.argv) > 3 else BUDGET
+    budget = None
+    if budget_path.exists():
+        budget = json.loads(budget_path.read_text(encoding="utf-8"))
+        if not budget.get("dynamics"):
+            budget = None
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(build(data), encoding="utf-8")
+    out.write_text(build(data, budget), encoding="utf-8")
     print(f"Страница собрана: {out} ({out.stat().st_size // 1024} КБ)")
 
 

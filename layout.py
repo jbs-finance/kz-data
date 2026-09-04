@@ -113,7 +113,17 @@ CTA_STYLE = """
 """
 
 
-def dataset_jsonld(updated_iso: str, sources: list[str]) -> str:
+def dataset_jsonld(
+    updated_iso: str,
+    sources: list[str],
+    name: str = "Радар экономики Казахстана",
+    description: str = (
+        "Ключевые макропоказатели Казахстана с ежедневным обновлением: "
+        "базовая ставка, инфляция, курсы валют, рост ВВП, оплата труда, "
+        "внешняя торговля."
+    ),
+    path: str = "/radar/",
+) -> str:
     """Разметка набора данных: поисковику и языковой модели нужно понимать, что это
     регулярно обновляемые данные с названными источниками, а не статья."""
     names = ", ".join(sorted(set(sources)))
@@ -123,13 +133,9 @@ def dataset_jsonld(updated_iso: str, sources: list[str]) -> str:
             {
                 "@context": "https://schema.org",
                 "@type": "Dataset",
-                "name": "Радар экономики Казахстана",
-                "description": (
-                    "Ключевые макропоказатели Казахстана с ежедневным обновлением: "
-                    "базовая ставка, инфляция, курсы валют, рост ВВП, оплата труда, "
-                    "внешняя торговля."
-                ),
-                "url": f"{SITE}/radar/",
+                "name": name,
+                "description": description,
+                "url": f"{SITE}{path}",
                 "inLanguage": "ru",
                 "isAccessibleForFree": True,
                 "dateModified": updated_iso,
