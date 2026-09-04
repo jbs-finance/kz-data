@@ -15,7 +15,7 @@ import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from layout import CTA_STYLE, HEADER_STYLE, cta_block, meta_tags, site_header
+from layout import CTA_STYLE, HEADER_STYLE, cta_block, dataset_jsonld, meta_tags, site_header
 
 from build_pulse import (
     BNS_ORDER,
@@ -35,6 +35,10 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_OUT = HERE / "out" / "radar.html"
 
 RANGE_YEARS = 5
+MONTHS_RU_PAGE = [
+    "январь", "февраль", "март", "апрель", "май", "июнь",
+    "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь",
+]
 
 RADAR_STYLE = """
 .hero { padding-block: clamp(1.5rem, 5vw, 2.5rem) 1rem; }
@@ -71,6 +75,24 @@ RADAR_STYLE = """
 .feed a { color: inherit; text-decoration: none; border-bottom: 1px solid var(--muted); }
 .feed a:hover, .feed a:focus-visible { border-bottom-color: var(--accent); }
 .feed .type { color: var(--muted-fg); font-size: 0.8125rem; }
+.peers { display: grid; gap: var(--sp); grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.peer { background: var(--card); border: 1px solid var(--muted); border-radius: var(--radius); padding: 1rem 1.15rem; }
+.peer h3 { font-size: 0.9375rem; font-weight: 600; margin: 0 0 0.15rem; color: var(--muted-fg); }
+.peer .asof { margin: 0 0 0.7rem; }
+.peer ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
+.peer li { display: grid; grid-template-columns: 1fr auto; gap: 0.2rem 0.6rem; align-items: baseline; font-size: 0.875rem; }
+.peer .bar { grid-column: 1 / -1; height: 5px; border-radius: 3px; background: var(--muted); overflow: hidden; }
+.peer .bar span { display: block; height: 100%; background: var(--line); border-radius: 3px; }
+.peer .kz { font-weight: 600; }
+.peer .kz .bar span { background: var(--accent); }
+.peer .amount { font-family: "JetBrains Mono", ui-monospace, monospace; white-space: nowrap; }
+.bai .value { margin: 0.1rem 0 0.4rem; }
+.bai .num { font-size: 1.75rem; }
+.bai .scale { grid-column: 1 / -1; position: relative; height: 6px; background: var(--muted); border-radius: 3px; }
+.bai .mid { position: absolute; left: 50%; top: -2px; width: 1px; height: 10px; background: var(--line); }
+.bai .fill { position: absolute; top: 0; height: 100%; border-radius: 3px; }
+.bai .fill-up { left: 50%; background: var(--up); }
+.bai .fill-down { right: 50%; background: var(--down); }
 h2.section { margin-top: 2.5rem; }
 """
 
@@ -135,8 +157,14 @@ def scan_card(series: dict, digits: int, period_label: str, signal: str) -> str:
         {spark(window(series["obs"], series["freq"]))}
 {range_markup(series, digits)}
         {signal_html}
-        <p class="asof">на {fmt_date(last["date"])}, источник: {html.escape(series["source"])}</p>
+        <p class="asof">{asof_label(series)} {fmt_date(last["date"])}, источник: {html.escape(series["source"])}</p>
       </article>"""
+
+
+def asof_label(series: dict) -> str:
+    """У ставки в источнике стоит дата установления, и она бывает на несколько дней
+    впереди дня объявления. «На такое-то число» там читалось бы как ошибка."""
+    return "действует с" if series["series_id"] == "kz.rate.base" else "на"
 
 
 def events_markup(events: list[dict]) -> str:
@@ -161,6 +189,99 @@ def calendar_markup(calendar: list[dict]) -> str:
         for e in calendar
     )
     return f"        <ol>\n{items}\n        </ol>"
+
+
+def peers_markup(groups: list[dict]) -> str:
+    """Сравнение с соседями. Казахстан подсвечен, порядок задан смыслом показателя:
+    у инфляции лучше меньше, у роста и дохода на душу больше."""
+    if not groups:
+        return ""
+    blocks = []
+    for g in groups:
+        items = g.get("items") or []
+        if not items:
+            continue
+        top = max(abs(i["value"]) for i in items) or 1
+        year = items[0].get("year", "")
+        stale = ' <span class="badge badge-stale">данные устарели</span>' if g.get("stale") else ""
+        rows = "\n".join(
+            f'          <li class="{"kz" if i.get("is_kz") else ""}">'
+            f'<span>{html.escape(str(i["country"]))}</span>'
+            f'<span class="amount">{fmt_num(i["value"], g.get("digits", 1))}</span>'
+            f'<span class="bar"><span style="width: {max(abs(i["value"]) / top * 100, 1):.1f}%"></span></span></li>'
+            for i in items
+        )
+        blocks.append(
+            f"""      <article class="peer">
+        <header class="card-head"><h3>{html.escape(g["name_ru"])}</h3>{stale}</header>
+        <p class="asof">{html.escape(str(year))} год, {html.escape(g["unit"])}, источник: {html.escape(g["source"])}</p>
+        <ol>
+{rows}
+        </ol>
+      </article>"""
+        )
+    return "\n".join(blocks)
+
+
+def share_description(radar: dict, by_id: dict) -> str:
+    """Описание для шаринга собирается из живых чисел: ссылка в мессенджере должна
+    показывать сегодняшнее состояние, а не общие слова о разделе."""
+    parts = []
+    rate = by_id.get("kz.rate.base")
+    if rate and rate.get("obs"):
+        parts.append(f"ставка {fmt_num(rate['obs'][-1]['value'], 2)}%")
+    infl = radar.get("inflation") or []
+    if infl:
+        parts.append(f"инфляция {fmt_num(infl[-1]['yoy'], 1)}%")
+    fx = by_id.get("kz.fx.usd")
+    if fx and fx.get("obs"):
+        parts.append(f"доллар {fmt_num(fx['obs'][-1]['value'], 2)} тенге")
+    head = ", ".join(parts)
+    tail = (
+        "Ключевые показатели экономики Казахстана с ежедневным обновлением "
+        "и разбором, что они значат для бизнеса."
+    )
+    return f"{head.capitalize()}. {tail}" if head else tail
+
+
+def business_activity_markup(bai: dict | None, signal: str) -> str:
+    """Деловая активность: сводный индекс и разбивка по секторам относительно
+    нейтральной отметки 50. Полосы растут от неё в обе стороны, потому что смысл
+    показателя не в величине, а в стороне от порога."""
+    if not bai:
+        return ""
+    sectors = bai.get("sectors") or []
+    rows = []
+    for s in sectors:
+        delta = s["value"] - 50.0
+        width = min(abs(delta) / 8 * 50, 50)
+        side = "up" if delta >= 0 else "down"
+        rows.append(
+            f'          <li><span>{html.escape(s["name"])}</span>'
+            f'<span class="amount">{fmt_num(s["value"], 1)}</span>'
+            f'<span class="scale"><span class="mid"></span>'
+            f'<span class="fill fill-{side}" style="width: {width:.1f}%"></span></span></li>'
+        )
+    stale = ' <span class="badge badge-stale">данные устарели</span>' if bai.get("stale") else ""
+    climate = (
+        f'<p class="asof">Индекс бизнес-климата {fmt_num(bai["climate"], 1)}</p>'
+        if bai.get("climate") is not None
+        else ""
+    )
+    year, month = bai["month"].split("-")
+    period = f"{MONTHS_RU_PAGE[int(month) - 1]} {year}"
+    signal_html = f'<p class="signal">{html.escape(signal)}</p>' if signal else ""
+    return f"""      <article class="peer bai">
+        <header class="card-head"><h3>Деловая активность, {html.escape(period)}</h3>{stale}</header>
+        <p class="value"><span class="num">{fmt_num(bai["value"], 1)}</span>
+          <span class="unit">пунктов, нейтрально 50</span></p>
+        {signal_html}
+        <ol>
+{chr(10).join(rows)}
+        </ol>
+        {climate}
+        <p class="asof">источник: {html.escape(bai["source"])}</p>
+      </article>"""
 
 
 def build(radar: dict, pulse: dict, trade: dict) -> str:
@@ -225,9 +346,15 @@ def build(radar: dict, pulse: dict, trade: dict) -> str:
     return TEMPLATE.format(
         style=STYLE + HEADER_STYLE + RADAR_STYLE + CTA_STYLE,
         meta=meta_tags(
-            "Радар экономики Казахстана: ставка, инфляция, курс, зарплаты",
-            "Ключевые показатели экономики Казахстана с ежедневным обновлением и разбором, что они значат для бизнеса. Базовая ставка, инфляция, курс тенге, рост ВВП, зарплаты, экспорт.",
+            "Радар экономики Казахстана: ставка, инфляция, курс, оплата труда",
+            share_description(radar, by_id),
             "/radar/",
+        )
+        + "\n"
+        + dataset_jsonld(
+            generated.isoformat(),
+            [s["source"] for s in radar.get("series", [])]
+            + [s["source"] for s in pulse.get("series", [])],
         ),
         header=site_header("radar"),
         generated_human=generated.strftime("%d.%m.%Y %H:%M UTC"),
@@ -241,6 +368,10 @@ def build(radar: dict, pulse: dict, trade: dict) -> str:
         macro_cards=macro_cards,
         bns_cards=bns_cards,
         sources_rows=sources_rows(all_series),
+        peers=peers_markup(radar.get("neighbours", [])),
+        business_activity=business_activity_markup(
+            radar.get("business_activity"), signals.get("business_activity", "")
+        ),
         cta=cta_block(),
         year=date.today().year,
     )
@@ -260,9 +391,9 @@ TEMPLATE = """<!doctype html>
 <div class="wrap">
   <header class="top hero">
     <h1>Радар экономики Казахстана</h1>
-    <p class="lede">Семь показателей, которые определяют условия для бизнеса, с ежедневным
+    <p class="lede">Показатели, которые определяют условия для бизнеса, с ежедневным
       обновлением из первоисточников. У каждой цифры: изменение, место в диапазоне за пять лет
-      и что она значит для ваших цен, зарплат и кредитов.</p>
+      и что она значит для ваших цен, оплаты труда и кредитов.</p>
     <p class="updated">Обновлено <time datetime="{generated_iso}">{generated_human}</time></p>
     {next_line}
   </header>
@@ -304,6 +435,20 @@ TEMPLATE = """<!doctype html>
 {bns_cards}
     </div>
 
+    <h2 class="section" id="business">Деловая активность</h2>
+    <p class="section-note">Опрос предприятий Национального Банка: около тысячи компаний из всех
+      регионов и отраслей. Отметка 50 разделяет расширение и сжатие активности.</p>
+    <div class="peers">
+{business_activity}
+    </div>
+
+    <h2 class="section" id="peers">Казахстан среди соседей</h2>
+    <p class="section-note">Последние доступные значения по международной базе. Годы у стран
+      могут отличаться: каждая публикует статистику в своём темпе.</p>
+    <div class="peers">
+{peers}
+    </div>
+
 {cta}
 
     <h2 class="section" id="sources">Источники и свежесть данных</h2>
@@ -324,6 +469,9 @@ TEMPLATE = """<!doctype html>
       <summary>Как читать эти цифры</summary>
       <div class="details-body">
         <ul>
+          <li>У базовой ставки показана дата установления из таблицы решений НБРК:
+            решение объявляют за несколько дней до того, как новая ставка начинает
+            действовать, поэтому дата бывает на пару дней впереди сегодняшней.</li>
           <li>Строка «что это значит» это правило по порогам, а не мнение аналитика: два
             снижения ставки подряд дают «цикл смягчения», инфляция выше цели НБРК даёт
             «закладывайте индексацию». Правила открыты в коде радара.</li>

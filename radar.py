@@ -44,6 +44,64 @@ RATE_PAGE = f"{NBK_HOST}/ru/news/grafik-prinyatiya-resheniy-po-bazovoy-stavke"
 INFLATION_TARGET = 5.0
 INFLATION_MONTHS = 24
 EVENT_WINDOW_DAYS = 45
+# Между плановыми решениями по ставке не больше двух месяцев, поэтому ряд старше
+# полугода означает не паузу регулятора, а недокачанные страницы источника.
+RATE_MAX_AGE_DAYS = 180
+
+# Индекс деловой активности НБРК. Файл рядов весит 24 МБ и разбирается минутами, а
+# то же число лежит текстом в информационном сообщении, поэтому берётся оттуда.
+# Значение выше 50 означает расширение активности, ниже 50 сжатие.
+BAI_NEWS = f"{NBK_HOST}/ru/news/informacionnye-soobshcheniya"
+BAI_NEUTRAL = 50.0
+BAI_MAX_AGE_DAYS = 100
+# Секторы опроса ИДА. Ключ это основа слова: в тексте встречаются разные падежи.
+BAI_SECTORS = {
+    "строительств": "Строительство",
+    "производств": "Производство",
+    "услуг": "Услуги",
+    "торговл": "Торговля",
+    "горнодобыва": "Горнодобыча",
+}
+
+# Сравнение с соседями: страны, с которыми Казахстан реально конкурирует за
+# инвестиции и рабочую силу, плюс два крупнейших торговых партнёра.
+NEIGHBOURS = ["KAZ", "UZB", "RUS", "TUR", "CHN", "KGZ", "AZE", "GEO"]
+NEIGHBOUR_RU = {
+    "Kazakhstan": "Казахстан",
+    "Uzbekistan": "Узбекистан",
+    "Russian Federation": "Россия",
+    "Turkiye": "Турция",
+    "China": "Китай",
+    "Kyrgyz Republic": "Киргизия",
+    "Azerbaijan": "Азербайджан",
+    "Georgia": "Грузия",
+}
+NEIGHBOUR_INDICATORS = [
+    {
+        "id": "inflation",
+        "indicator": "FP.CPI.TOTL.ZG",
+        "name_ru": "Инфляция",
+        "unit": "% за год",
+        "digits": 1,
+        "lower_is_better": True,
+    },
+    {
+        "id": "growth",
+        "indicator": "NY.GDP.MKTP.KD.ZG",
+        "name_ru": "Рост ВВП",
+        "unit": "% за год",
+        "digits": 1,
+        "lower_is_better": False,
+    },
+    {
+        "id": "gdp.pc",
+        "indicator": "NY.GDP.PCAP.CD",
+        "name_ru": "ВВП на душу населения",
+        "unit": "USD",
+        "digits": 0,
+        "lower_is_better": False,
+    },
+]
 
 MONTHS_GEN = {
     "января": 1,
@@ -129,10 +187,15 @@ def parse_rate_table(markup: str) -> tuple[list[tuple[date, float, str]], list[d
     return decisions, planned
 
 
-def fetch_base_rate() -> tuple[Series, list[date]]:
+def fetch_base_rate() -> tuple[Series, list[date], list[int]]:
+    """Ряд решений, будущие даты и годы, которые собрать не удалось.
+
+    Несобранный год возвращается наверх, а не проглатывается: если не скачался
+    текущий год, ряд обрывается на прошлом, и без явного сигнала страница покажет
+    старую ставку как действующую."""
     decisions: list[tuple[date, float, str]] = []
     planned: list[date] = []
-    failed = []
+    failed: list[int] = []
     for year, rubric in RATE_RUBRICS.items():
         url = f"{RATE_PAGE}/rubrics/{rubric}"
         try:
@@ -141,13 +204,13 @@ def fetch_base_rate() -> tuple[Series, list[date]]:
             failed.append(year)
             continue
         got, future = parse_rate_table(body)
+        if not got and not future:
+            failed.append(year)
+            continue
         decisions.extend(got)
         planned.extend(future)
     if not decisions:
         raise SourceError("таблица решений по ставке не разобрана ни за один год")
-    if failed:
-        # Пропущенный старый год сузит диапазон, но не сломает текущее значение.
-        pass
     decisions.sort()
     last_corridor = decisions[-1][2]
     return (
@@ -163,6 +226,7 @@ def fetch_base_rate() -> tuple[Series, list[date]]:
             note=f"коридор {last_corridor}" if last_corridor else "",
         ),
         sorted(planned),
+        sorted(failed),
     )
 
 
@@ -232,15 +296,15 @@ def parse_inflation_page(markup: str) -> dict:
         return None
 
     yoy = grab([
-        r"годов(?:ой|ая)[^%]{0,60}?составил[а]?\s*([\d,.]+)\s*%",
-        r"за год составила\s*([\d,.]+)\s*%",
-        r"Инфляция в Республике Казахстан в [а-яё]+ \d{4} года[^%]{0,40}?составила\s*([\d,.]+)\s*%",
+        r"годов(?:ой|ая)[^%]{0,60}?составил[а]?\s*(\d+(?:[.,]\d+)?)\s*%",
+        r"за год составила\s*(\d+(?:[.,]\d+)?)\s*%",
+        r"Инфляция в Республике Казахстан в [а-яё]+ \d{4} года[^%]{0,40}?составила\s*(\d+(?:[.,]\d+)?)\s*%",
     ])
     if yoy is None or not 0 <= yoy < 60:
         raise SourceError("в публикации нет годовой инфляции")
     mom = grab([
-        r"за месяц[^\d]{0,8}([\d,.]+)\s*%",
-        r"Месячный уровень[^%]{0,80}?составил\s*([\d,.]+)\s*%",
+        r"за месяц[^\d]{0,8}(\d+(?:[.,]\d+)?)\s*%",
+        r"Месячный уровень[^%]{0,80}?составил\s*(\d+(?:[.,]\d+)?)\s*%",
     ])
     if mom is not None and abs(mom) > 5:
         mom = None
@@ -253,9 +317,9 @@ def parse_inflation_page(markup: str) -> dict:
         "month": f"{year}-{month:02d}",
         "yoy": yoy,
         "mom": mom,
-        "food": cat(r"(?<!не)продовольственные товары[^%]{0,40}?на\s*([\d,.]+)\s*%"),
-        "nonfood": cat(r"непродовольственные товары[^%]{0,40}?на\s*([\d,.]+)\s*%"),
-        "services": cat(r"платные услуги[^%]{0,40}?на\s*([\d,.]+)\s*%"),
+        "food": cat(r"(?<!не)продовольственные товары[^%]{0,40}?на\s*(\d+(?:[.,]\d+)?)\s*%"),
+        "nonfood": cat(r"непродовольственные товары[^%]{0,40}?на\s*(\d+(?:[.,]\d+)?)\s*%"),
+        "services": cat(r"платные услуги[^%]{0,40}?на\s*(\d+(?:[.,]\d+)?)\s*%"),
     }
 
 
@@ -480,6 +544,171 @@ def fx_events(fx: dict | None, today: date) -> list[dict]:
     ]
 
 
+# --- Казахстан среди соседей ------------------------------------------------------
+
+
+def fetch_neighbours() -> tuple[list[dict], list[str]]:
+    """Последнее известное значение по каждой стране. Международная база отдаёт все
+    страны одним запросом, поэтому сравнение стоит три обращения, а не двадцать четыре."""
+    from etl import WB_HOST
+
+    out: list[dict] = []
+    problems: list[str] = []
+    countries = ";".join(NEIGHBOURS)
+    for spec in NEIGHBOUR_INDICATORS:
+        url = (
+            f"{WB_HOST}/country/{countries}/indicator/{spec['indicator']}"
+            "?format=json&per_page=200&mrnev=1"
+        )
+        try:
+            payload = json.loads(fetch(url, f"wb_neighbours_{spec['id']}.json"))
+        except SourceError as exc:
+            problems.append(f"соседи, {spec['name_ru']}: {exc}")
+            continue
+        rows = payload[1] if isinstance(payload, list) and len(payload) > 1 else None
+        if not rows:
+            problems.append(f"соседи, {spec['name_ru']}: пустой ответ")
+            continue
+        items = []
+        for row in rows:
+            value = row.get("value")
+            if value is None:
+                continue
+            name = row["country"]["value"]
+            items.append(
+                {
+                    "country": NEIGHBOUR_RU.get(name, name),
+                    "value": value,
+                    "year": row["date"],
+                    "is_kz": row.get("countryiso3code") == "KAZ",
+                }
+            )
+        if not items:
+            problems.append(f"соседи, {spec['name_ru']}: ни одного значения")
+            continue
+        items.sort(key=lambda i: i["value"], reverse=not spec["lower_is_better"])
+        out.append(
+            {
+                "id": spec["id"],
+                "name_ru": spec["name_ru"],
+                "unit": spec["unit"],
+                "digits": spec["digits"],
+                "lower_is_better": spec["lower_is_better"],
+                "source": "World Bank",
+                "fetched_at": _now(),
+                "items": items,
+            }
+        )
+    return out, problems
+
+
+# --- Деловая активность -----------------------------------------------------------
+
+
+def parse_business_activity(markup: str) -> dict:
+    """Числа ИДА из текста информационного сообщения.
+
+    Набор секторов у опроса фиксирован, поэтому они ищутся по словарю, а не по
+    шаблону «в чём-то»: иначе в названия попадают обороты вроде «в зоне роста».
+    Значения прошлого месяца стоят в скобках и вырезаются до разбора чисел, иначе
+    они сдвигают сопоставление секторов со значениями."""
+    text = _text(markup)
+    period = re.search(r"о деловой активности в ([а-яё]+) (\d{4}) года", text)
+    if not period:
+        period = re.search(r"В ([а-яё]+) (\d{4}) года индекс деловой активности", text)
+    if not period or period.group(1).lower() not in MONTHS_PREP:
+        raise SourceError("в сообщении не найден месяц")
+    month = MONTHS_PREP[period.group(1).lower()]
+    year = int(period.group(2))
+
+    total = re.search(r"индекс деловой активности[^.]{0,120}?состав\w+\s*(\d+(?:[.,]\d+)?)", text)
+    if not total:
+        raise SourceError("в сообщении нет сводного значения ИДА")
+
+    sectors: list[dict] = []
+    used: set[str] = set()
+    for sentence in text.split("."):
+        if "состав" not in sentence:
+            continue
+        clean = re.sub(r"\([^)]*\)", " ", sentence)
+        numbers = [_num(n) for n in re.findall(r"\b(\d{2},\d)\b", clean)]
+        if not numbers:
+            continue
+        found = []
+        for stem, label in BAI_SECTORS.items():
+            pos = clean.lower().find(stem)
+            if pos >= 0 and label not in used:
+                found.append((pos, label))
+        found.sort()
+        for (_, label), value in zip(found, numbers):
+            if 20 <= value <= 80:
+                sectors.append({"name": label, "value": value})
+                used.add(label)
+
+    climate = re.search(r"бизнес-климата[^.]{0,80}?состав\w+\s*(\d+(?:[.,]\d+)?)", text)
+    return {
+        "month": f"{year}-{month:02d}",
+        "value": _num(total.group(1)),
+        "sectors": sectors,
+        "climate": _num(climate.group(1)) if climate else None,
+    }
+
+
+def fetch_business_activity() -> tuple[dict | None, list[str]]:
+    """Свежее сообщение об ИДА из ленты информационных сообщений НБРК."""
+    problems: list[str] = []
+    try:
+        listing = fetch(BAI_NEWS, "bai_listing.html").decode("utf-8", "ignore")
+    except SourceError as exc:
+        return None, [f"ИДА: лента недоступна ({exc})"]
+
+    seen: set[str] = set()
+    for href, num, raw_title in re.findall(
+        r'href="(/ru/news/informacionnye-soobshcheniya/(\d+))"[^>]*>(.*?)</a>', listing, re.DOTALL
+    ):
+        if num in seen:
+            continue
+        seen.add(num)
+        title = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", raw_title))).strip()
+        if "ИДА" not in title and "еловая активность" not in title:
+            continue
+        url = NBK_HOST + href
+        try:
+            page = fetch(url, f"bai_{num}.html").decode("utf-8", "ignore")
+            data = parse_business_activity(page)
+        except SourceError as exc:
+            problems.append(f"ИДА: {exc}")
+            continue
+        if not (20 <= data["value"] <= 80):
+            problems.append(f"ИДА: значение {data['value']} вне правдоподобного диапазона")
+            continue
+        data["source"] = "Национальный Банк РК"
+        data["source_url"] = url
+        data["title"] = title
+        data["fetched_at"] = _now()
+        return data, problems
+    problems.append("ИДА: свежего сообщения в ленте нет")
+    return None, problems
+
+
+def signal_business_activity(bai: dict | None) -> str:
+    if not bai:
+        return ""
+    value = bai["value"]
+    weak = [s["name"].lower() for s in bai.get("sectors", []) if s["value"] < BAI_NEUTRAL]
+    if value > BAI_NEUTRAL + 2:
+        head = f"Активность заметно расширяется ({fmt_pct(value).rstrip('%')} против нейтральных 50): спрос растёт, конкуренция за подрядчиков и кадры усиливается."
+    elif value > BAI_NEUTRAL:
+        head = f"Активность выше нейтральной отметки ({fmt_pct(value).rstrip('%')} против 50), но запас невелик."
+    elif value > BAI_NEUTRAL - 2:
+        head = f"Активность около нейтральной отметки ({fmt_pct(value).rstrip('%')} против 50): рынок ни растёт, ни падает."
+    else:
+        head = f"Активность сжимается ({fmt_pct(value).rstrip('%')} против нейтральных 50): планируйте выручку консервативно."
+    if weak:
+        head += " Ниже нейтральной отметки: " + ", ".join(weak[:3]) + "."
+    return head
+
+
 # --- Интерпретация для бизнеса ---------------------------------------------------
 
 
@@ -652,10 +881,21 @@ def build(dataset: Path, pulse_path: Path | None, trade_path: Path | None) -> di
 
     rate: Series | None = None
     try:
-        rate, planned_rate = fetch_base_rate()
+        rate, planned_rate, failed_years = fetch_base_rate()
+        if failed_years:
+            issues.append(
+                "kz.rate.base: не собраны решения за "
+                + ", ".join(str(y) for y in failed_years)
+            )
         problems = validate(rate, {"min": 1, "max": 40})
-        # Ставка меняется 8 раз в год, свежесть дневного ряда к ней неприменима.
+        # Дневная мера свежести к ставке неприменима: решений восемь в год. Но и
+        # снимать проверку нельзя, иначе обрыв ряда на прошлом годе пройдёт молча.
+        age = (date.today() - date.fromisoformat(rate.obs[-1].date)).days
         problems = [p for p in problems if "старше" not in p]
+        if age > RATE_MAX_AGE_DAYS:
+            problems.append(
+                f"последнее решение {rate.obs[-1].date} старше {RATE_MAX_AGE_DAYS} дней"
+            )
         if problems:
             raise SourceError("; ".join(problems))
         series_out.append(asdict(rate))
@@ -702,6 +942,24 @@ def build(dataset: Path, pulse_path: Path | None, trade_path: Path | None) -> di
     events.extend(fx_events(by_id.get("kz.fx.usd"), today))
     events.sort(key=lambda e: e["date"], reverse=True)
 
+    bai, bai_problems = fetch_business_activity()
+    issues.extend(bai_problems)
+    if bai is None:
+        old_bai = previous.get("business_activity")
+        if old_bai:
+            bai = {**old_bai, "stale": True}
+    elif bai:
+        age = (date.today() - date(int(bai["month"][:4]), int(bai["month"][5:7]), 28)).days
+        if age > BAI_MAX_AGE_DAYS:
+            issues.append(f"ИДА: последнее сообщение за {bai['month']}")
+
+    neighbours, neighbour_problems = fetch_neighbours()
+    issues.extend(neighbour_problems)
+    if not neighbours:
+        # Сравнение не критично для страницы, поэтому прошлый срез показывается
+        # с пометкой, а не выбрасывается.
+        neighbours = [{**n, "stale": True} for n in (previous.get("neighbours") or [])]
+
     inflation_yoy = points[-1]["yoy"] if points else None
     signals = {
         "rate": signal_rate(rate, inflation_yoy) if rate else "",
@@ -713,6 +971,7 @@ def build(dataset: Path, pulse_path: Path | None, trade_path: Path | None) -> di
             trade_by_id.get("kz.exports.usd"), breakdowns.get("exports.commodities")
         ),
         "unemployment": signal_unemployment(by_id.get("kz.unemployment")),
+        "business_activity": signal_business_activity(bai),
     }
 
     return {
@@ -721,6 +980,8 @@ def build(dataset: Path, pulse_path: Path | None, trade_path: Path | None) -> di
         "inflation": points,
         "next_rate_decision": next_rate,
         "calendar": calendar[:14],
+        "neighbours": neighbours,
+        "business_activity": bai,
         "events": events[:12],
         "signals": signals,
         "issues": issues,
@@ -737,7 +998,8 @@ def main() -> None:
     dataset.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
         f"Рядов: {len(data['series'])}, точек инфляции: {len(data['inflation'])}, "
-        f"событий: {len(data['events'])}, релизов впереди: {len(data['calendar'])}"
+        f"событий: {len(data['events'])}, релизов впереди: {len(data['calendar'])}, "
+        f"сравнений: {len(data['neighbours'])}"
     )
     if data["next_rate_decision"]:
         print(f"Следующее решение по ставке: {data['next_rate_decision']['date']}")

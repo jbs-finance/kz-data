@@ -8,6 +8,7 @@ app/globals.css и components/layout/Header.tsx репозитория website.
 from __future__ import annotations
 
 import html
+import json
 
 SITE = "https://jbs.finance"
 
@@ -110,3 +111,35 @@ CTA_STYLE = """
 .cta-link:hover, .cta-link:focus-visible { opacity: 0.92; transform: translateY(-1px); }
 @media (prefers-reduced-motion: reduce) { .cta-link:hover { transform: none; } }
 """
+
+
+def dataset_jsonld(updated_iso: str, sources: list[str]) -> str:
+    """Разметка набора данных: поисковику и языковой модели нужно понимать, что это
+    регулярно обновляемые данные с названными источниками, а не статья."""
+    names = ", ".join(sorted(set(sources)))
+    return (
+        '<script type="application/ld+json">'
+        + json.dumps(
+            {
+                "@context": "https://schema.org",
+                "@type": "Dataset",
+                "name": "Радар экономики Казахстана",
+                "description": (
+                    "Ключевые макропоказатели Казахстана с ежедневным обновлением: "
+                    "базовая ставка, инфляция, курсы валют, рост ВВП, оплата труда, "
+                    "внешняя торговля."
+                ),
+                "url": f"{SITE}/radar/",
+                "inLanguage": "ru",
+                "isAccessibleForFree": True,
+                "dateModified": updated_iso,
+                "creator": {"@type": "Organization", "name": "JB Solutions", "url": SITE},
+                "spatialCoverage": {"@type": "Place", "name": "Казахстан"},
+                "sourceOrganization": [
+                    {"@type": "Organization", "name": n} for n in names.split(", ") if n
+                ],
+            },
+            ensure_ascii=False,
+        )
+        + "</script>"
+    )
