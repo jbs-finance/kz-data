@@ -15,6 +15,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
+from layout import CTA_STYLE, HEADER_STYLE, cta_block, meta_tags, site_header
 from build_pulse import STYLE, fmt_date
 
 HERE = Path(__file__).resolve().parent
@@ -116,7 +117,10 @@ def simple_table(title: str, items: list[dict], columns: tuple[str, str]) -> str
 def build(data: dict) -> str:
     generated = datetime.fromisoformat(data["generated_at"])
     return TEMPLATE.format(
-        style=STYLE + TAX_STYLE,
+        meta=meta_tags('Налоги Казахстана 2026: ставки, пороги и сроки по Налоговому кодексу', 'Ставки НДС, КПН, ИПН, соцплатежей и спецрежимов на 2026 год с порогами в тенге и сроками отчётности. Справочник сверен с первоисточниками, дата сверки на странице.', '/radar/tax/'),
+        header=site_header('tax'),
+        cta=cta_block(),
+        style=STYLE + HEADER_STYLE + CTA_STYLE + TAX_STYLE,
         year=data["year"],
         generated_human=generated.strftime("%d.%m.%Y %H:%M UTC"),
         generated_iso=generated.isoformat(),
@@ -141,11 +145,12 @@ TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex, nofollow, noarchive">
+{meta}
 <title>Налоги Казахстана {year}</title>
 <style>{style}</style>
 </head>
 <body>
+{header}
 <div class="wrap">
   <header class="top">
     <h1>Налоги Казахстана {year}</h1>
@@ -193,6 +198,7 @@ TEMPLATE = """<!doctype html>
         </ul>
       </div>
     </details>
+{cta}
   </main>
 
   <footer>

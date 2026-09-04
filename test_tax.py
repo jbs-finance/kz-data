@@ -116,12 +116,13 @@ class TestPage:
 
     def test_self_contained_and_scriptless(self):
         page = self.page()
-        assert not re.search(r'(src|href)="https?://', page)
+        assert not re.search(r'<(img|link|script)[^>]+(src|href)="https?://(?!jbs\.finance)', page)
         assert "<script" not in page
         assert "{{" not in page and ":root {" in page
 
     def test_noindex_present(self):
-        assert 'name="robots" content="noindex' in self.page()
+        assert 'rel="canonical" href="https://jbs.finance/radar/tax/"' in self.page()
+        assert "noindex" not in self.page()
 
     def test_disclaimer_is_present_and_explicit(self):
         """Публиковать ставки без оговорки об ответственности нельзя."""

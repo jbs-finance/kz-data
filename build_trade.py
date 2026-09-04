@@ -15,6 +15,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
+from layout import CTA_STYLE, HEADER_STYLE, cta_block, meta_tags, site_header
 from build_pulse import STYLE, card, fmt_num
 
 HERE = Path(__file__).resolve().parent
@@ -94,7 +95,10 @@ def build(data: dict) -> str:
         )
 
     return TEMPLATE.format(
-        style=STYLE + RANKING_STYLE,
+        meta=meta_tags('Внешняя торговля Казахстана: экспорт, импорт, партнёры и товарные группы', 'Экспорт и импорт Казахстана, сальдо, прямые инвестиции и структура торговли по странам и товарным группам. Данные World Bank и UN Comtrade с автоматическим обновлением.', '/radar/trade/'),
+        header=site_header('trade'),
+        cta=cta_block(),
+        style=STYLE + HEADER_STYLE + CTA_STYLE + RANKING_STYLE,
         generated_human=generated.strftime("%d.%m.%Y %H:%M UTC"),
         generated_iso=generated.isoformat(),
         flow_cards=flow_cards,
@@ -110,11 +114,12 @@ TEMPLATE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex, nofollow, noarchive">
+{meta}
 <title>Внешняя торговля Казахстана</title>
 <style>{style}</style>
 </head>
 <body>
+{header}
 <div class="wrap">
   <header class="top">
     <h1>Внешняя торговля Казахстана</h1>
@@ -163,6 +168,7 @@ TEMPLATE = """<!doctype html>
         </ul>
       </div>
     </details>
+{cta}
   </main>
 
   <footer>

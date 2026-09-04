@@ -201,11 +201,12 @@ class TestPage:
 
     def test_page_is_self_contained(self):
         page = build(self.dataset())
-        assert not re.search(r'(src|href)="https?://', page)
+        assert not re.search(r'<(img|link|script)[^>]+(src|href)="https?://(?!jbs\.finance)', page)
         assert "<script" not in page
 
     def test_noindex_present(self):
-        assert 'name="robots" content="noindex' in build(self.dataset())
+        assert 'rel="canonical" href="https://jbs.finance/radar/trade/"' in build(self.dataset())
+        assert "noindex" not in build(self.dataset())
 
     def test_css_actually_rendered(self):
         """Незакрытая подстановка оставляет в CSS двойные скобки, и страница

@@ -70,6 +70,15 @@ WB_SERIES = [
         "max": 60,
     },
     {
+        "series_id": "kz.gdp.growth",
+        "indicator": "NY.GDP.MKTP.KD.ZG",
+        "name_ru": "Рост ВВП, реальный",
+        "unit": "% за год",
+        "scale": 1,
+        "min": -20,
+        "max": 20,
+    },
+    {
         "series_id": "kz.unemployment",
         "indicator": "SL.UEM.TOTL.ZS",
         "name_ru": "Безработица",
